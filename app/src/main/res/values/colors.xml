@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Warna dasar (contoh) -->
+    <color name="black">#FF000000</color>
+    <color name="white">#FFFFFFFF</color>
+
+    <!-- Warna Tema HoHE untuk XML Layouts -->
+    <!-- Nama-nama ini harus sama persis dengan yang dirujuk di layout XML -->
+    <color name="HoHEPinkPrimary">#F5ABC9</color>
+    <color name="HoHEPinkLight">#FFE4FA</color>
+    <color name="HoHEWhite">#FFFFFF</color>
+    <color name="HoHEDarkText">#4A4A4A</color>
+
+</resources>
