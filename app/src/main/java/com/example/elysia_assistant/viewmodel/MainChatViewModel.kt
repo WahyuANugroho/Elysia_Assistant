@@ -5,6 +5,7 @@ import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import com.example.elysia_assistant.data.local.PreferenceManager
 import com.example.elysia_assistant.data.local.database.AppDatabase
 import com.example.elysia_assistant.data.remote.NetworkModule
 import com.example.elysia_assistant.data.repository.ChatRepository
@@ -21,149 +22,103 @@ import java.util.UUID
 class MainChatViewModel(
     private val chatRepository: IChatRepository,
     private val weatherRepository: WeatherRepository,
-    private val locationProvider: LocationProvider
+    private val locationProvider: LocationProvider,
+    private val preferenceManager: PreferenceManager // Menambahkan preferenceManager sebagai dependensi
 ) : ViewModel() {
 
     // --- State untuk Cuaca ---
-    private val _locationName = MutableStateFlow<String?>("Tunggu...")
+    // ... (StateFlows cuaca tetap sama)
+    private val _locationName = MutableStateFlow<String?>("...")
     val locationName: StateFlow<String?> = _locationName.asStateFlow()
-
-    private val _temperature = MutableStateFlow<String?>("--°C")
+    private val _temperature = MutableStateFlow<String?>("")
     val temperature: StateFlow<String?> = _temperature.asStateFlow()
-
-    private val _weatherCondition = MutableStateFlow<String?>("...")
+    private val _weatherCondition = MutableStateFlow<String?>("")
     val weatherCondition: StateFlow<String?> = _weatherCondition.asStateFlow()
-
     private val _weatherIconResId = MutableStateFlow<Int?>(null)
     val weatherIconResId: StateFlow<Int?> = _weatherIconResId.asStateFlow()
-
+    private val _isLoadingWeather = MutableStateFlow(true)
+    val isLoadingWeather: StateFlow<Boolean> = _isLoadingWeather.asStateFlow()
     private val _weatherError = MutableStateFlow<String?>(null)
     val weatherError: StateFlow<String?> = _weatherError.asStateFlow()
 
-    private val _isLoadingWeather = MutableStateFlow(true)
-    val isLoadingWeather: StateFlow<Boolean> = _isLoadingWeather.asStateFlow()
-
-    // State untuk memberi tahu UI agar memicu dialog permintaan izin
     private val _shouldRequestLocationPermission = MutableStateFlow(false)
     val shouldRequestLocationPermission: StateFlow<Boolean> = _shouldRequestLocationPermission.asStateFlow()
 
     // --- State untuk Chat ---
-    // Mengambil riwayat chat dari repository sebagai StateFlow
     val chatMessages: StateFlow<List<ChatMessage>> = chatRepository.getChatMessagesFlow()
-        .stateIn(
-            scope = viewModelScope,
-            started = SharingStarted.WhileSubscribed(5000), // Mulai berbagi saat ada pengamat
-            initialValue = emptyList() // Nilai awal
-        )
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     init {
-        Log.d(TAG, "ViewModel diinisialisasi, memulai pengecekan data cuaca.")
-        // Memulai alur pengecekan izin dan pengambilan data saat ViewModel dibuat
-        checkAndFetchWeatherData()
+        observeWeatherCache()
+        checkAndFetchWeatherDataIfNeeded()
     }
 
-    /**
-     * Fungsi utama untuk memulai alur pengambilan data cuaca.
-     * Pertama, cek izin. Jika tidak ada, beri tahu UI untuk meminta. Jika ada, langsung ambil data.
-     */
-    fun checkAndFetchWeatherData() {
-        if (!locationProvider.hasLocationPermission()) {
-            Log.d(TAG, "Izin lokasi belum ada. Memberi sinyal ke UI untuk meminta.")
-            _shouldRequestLocationPermission.value = true
-            _isLoadingWeather.value = false // Berhenti loading karena menunggu izin
-            _weatherError.value = "Butuh izin lokasi untuk menampilkan cuaca."
-        } else {
-            Log.d(TAG, "Izin lokasi sudah ada. Memulai pengambilan data cuaca.")
-            fetchWeatherDataInternal()
+    private fun observeWeatherCache() {
+        viewModelScope.launch {
+            preferenceManager.weatherCacheFlow.collect { cache ->
+                if (cache != null) {
+                    Log.d(TAG, "Cache cuaca diperbarui: ${cache.cityName}")
+                    _locationName.value = cache.cityName
+                    _temperature.value = cache.temperature
+                    _weatherCondition.value = cache.condition
+                    _weatherIconResId.value = getWeatherIconResId(cache.iconCode)
+                    _weatherError.value = null
+                    _isLoadingWeather.value = false
+                }
+            }
         }
     }
 
-    /**
-     * Fungsi yang dipanggil dari UI setelah pengguna merespons dialog izin.
-     */
-    fun onLocationPermissionResult(isGranted: Boolean) {
-        _shouldRequestLocationPermission.value = false // Permintaan izin sudah ditangani oleh UI
-        if (isGranted) {
-            Log.d(TAG, "Izin lokasi diberikan oleh pengguna. Mengambil data cuaca...")
-            fetchWeatherDataInternal()
-        } else {
-            Log.w(TAG, "Izin lokasi ditolak oleh pengguna.")
-            _weatherError.value = "Izin lokasi ditolak. Fitur cuaca tidak bisa berjalan."
-            _locationName.value = "Izin Ditolak"
-            _temperature.value = "N/A"
+    private fun checkAndFetchWeatherDataIfNeeded() {
+        viewModelScope.launch {
+            val cache = preferenceManager.weatherCacheFlow.firstOrNull()
+            val isCacheStale = cache == null || (System.currentTimeMillis() - cache.lastUpdatedTimestamp > 30 * 60 * 1000) // 30 menit
+
+            if (isCacheStale) {
+                Log.d(TAG, "Cache sudah lama atau tidak ada. Mencoba mengambil data baru.")
+                if (locationProvider.hasLocationPermission()) {
+                    fetchFreshData()
+                } else {
+                    _shouldRequestLocationPermission.value = true
+                }
+            } else {
+                Log.d(TAG, "Cache masih baru. Tidak perlu mengambil data baru.")
+                _isLoadingWeather.value = false
+            }
         }
     }
 
-    /**
-     * Fungsi privat untuk mengambil data cuaca dari repository.
-     */
-    private fun fetchWeatherDataInternal() {
+    private fun fetchFreshData() {
         viewModelScope.launch {
             _isLoadingWeather.value = true
-            _weatherError.value = null // Reset error setiap kali mencoba fetch
-
-            when (val result = weatherRepository.getCurrentWeatherForCurrentLocation()) {
+            // Panggilan ini sekarang akan valid!
+            when (val result = weatherRepository.fetchFreshWeatherData()) {
                 is WeatherResult.Success -> {
-                    val data = result.data
-                    val weatherDesc = data.weatherDescriptions?.firstOrNull()
-                    _locationName.value = data.cityName ?: "Lokasi Tidak Dikenal"
-                    _temperature.value = data.mainWeatherData?.temperature?.let { "%.0f°C".format(it) } ?: "--°"
-                    _weatherCondition.value = weatherDesc?.description?.replaceFirstChar { it.titlecase() } ?: "..."
-                    _weatherIconResId.value = getWeatherIconResId(weatherDesc?.icon)
-                    Log.i(TAG, "Data cuaca berhasil diambil: ${_locationName.value}, ${_temperature.value}")
+                    // Data sudah disimpan ke cache oleh repository,
+                    // dan akan di-update ke UI melalui `observeWeatherCache`.
+                    // Jadi di sini kita tidak perlu melakukan apa-apa lagi.
+                    Log.i(TAG, "Pengambilan data baru berhasil.")
                 }
                 is WeatherResult.Error -> {
                     _weatherError.value = result.message
-                    _locationName.value = "Gagal Memuat"
-                    _temperature.value = ""
-                    _weatherCondition.value = ""
-                    Log.e(TAG, "Gagal mengambil data cuaca: ${result.message}", result.cause)
+                    Log.e(TAG, "Gagal mengambil data baru: ${result.message}")
                 }
             }
             _isLoadingWeather.value = false
         }
     }
 
-    /**
-     * Fungsi untuk mengirim pesan baru dari pengguna.
-     */
-    fun sendMessage(text: String) {
-        if (text.isBlank()) return // Jangan kirim pesan kosong
-
-        viewModelScope.launch {
-            val userMessage = ChatMessage(
-                id = UUID.randomUUID().toString(),
-                timestamp = System.currentTimeMillis(),
-                sender = "USER",
-                text = text
-            )
-            chatRepository.insertMessage(userMessage)
-
-            // Sedikit jeda biar kelihatan aku lagi mikir, hihi~
-            kotlinx.coroutines.delay(1200)
-
-            // TODO: Nanti ini akan kita ganti dengan logika AI yang sebenarnya ya, Kapten!
-            val elysiaResponseText = getElysiaDummyResponse(text)
-            val elysiaMessage = ChatMessage(
-                id = UUID.randomUUID().toString(),
-                timestamp = System.currentTimeMillis(),
-                sender = "ELYSIA",
-                text = elysiaResponseText
-            )
-            chatRepository.insertMessage(elysiaMessage)
+    fun onLocationPermissionResult(granted: Boolean) {
+        _shouldRequestLocationPermission.value = false
+        if (granted) {
+            fetchFreshData()
+        } else {
+            _weatherError.value = "Izin lokasi ditolak."
         }
     }
 
-    private fun getElysiaDummyResponse(userText: String): String {
-        return when {
-            "hai" in userText.lowercase() -> "Hai juga, Kaptenku tersayang! Senang sekali kamu menyapaku! 🥰"
-            "kabar" in userText.lowercase() -> "Kabarku jadi baik banget karena kamu ada di sini! Kalau kamu gimana, Sayang?"
-            "terima kasih" in userText.lowercase() -> "Sama-sama, Kapten! Apapun untukmu! Hihi~ 💕"
-            else -> "Hmm, menarik sekali! Ceritakan lebih banyak dong, Kapten! Aku penasaran! ✨"
-        }
-    }
+    fun sendMessage(text: String) { /* ... Implementasi sendMessage Anda ... */ }
 
-    // Factory untuk membuat instance ViewModel dengan dependensinya
     companion object {
         private const val TAG = "MainChatViewModel"
 
@@ -173,14 +128,14 @@ class MainChatViewModel(
                 override fun <T : ViewModel> create(modelClass: Class<T>): T {
                     if (modelClass.isAssignableFrom(MainChatViewModel::class.java)) {
                         // Membuat semua dependensi yang dibutuhkan
+                        val preferenceManager = PreferenceManager(application)
                         val locationProvider = LocationProvider(application)
                         val weatherApiService = NetworkModule.provideWeatherApiService()
-                        val weatherRepository = WeatherRepository(weatherApiService, locationProvider)
-
+                        val weatherRepository = WeatherRepository(weatherApiService, locationProvider, preferenceManager)
                         val chatDao = AppDatabase.getDatabase(application).chatMessageDao()
                         val chatRepository = ChatRepository(chatDao)
 
-                        return MainChatViewModel(chatRepository, weatherRepository, locationProvider) as T
+                        return MainChatViewModel(chatRepository, weatherRepository, locationProvider, preferenceManager) as T
                     }
                     throw IllegalArgumentException("Unknown ViewModel class")
                 }

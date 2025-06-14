@@ -2,18 +2,19 @@
 // dan juga sama dengan 'namespace' di build.gradle.kts dan 'package' di AndroidManifest.xml
 package com.example.elysia_assistant
 
+import android.app.Application
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.material3.MaterialTheme // Pastikan ini dari material3
-import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.core.view.WindowCompat // Impor untuk setDecorFitsSystemWindows
-import androidx.core.view.WindowInsetsCompat
-import androidx.core.view.WindowInsetsControllerCompat
+import androidx.compose.ui.platform.LocalContext
+import androidx.core.view.WindowCompat
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
@@ -25,18 +26,7 @@ import com.example.elysia_assistant.ui.theme.ElysiaAssistantTheme
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
-        // 1. Aktifkan edge-to-edge display.
-        // Ini memungkinkan konten digambar di seluruh layar, termasuk di area system bars.
-        WindowCompat.setDecorFitsSystemWindows(window, false) // Disarankan 'false' untuk kontrol penuh insets & immersive
-
-        // 2. Siapkan controller untuk WindowInsets dan atur mode imersif.
-        val windowInsetsController = WindowInsetsControllerCompat(window, window.decorView)
-        // Sembunyikan status bar dan navigation bar.
-        windowInsetsController.hide(WindowInsetsCompat.Type.systemBars())
-        // Atur agar system bar muncul kembali sementara saat pengguna melakukan swipe dari tepi layar.
-        windowInsetsController.systemBarsBehavior =
-            WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        WindowCompat.setDecorFitsSystemWindows(window, false)
 
         setContent {
             ElysiaAssistantTheme {
@@ -55,20 +45,17 @@ class MainActivity : ComponentActivity() {
 object NavDestinations {
     const val SPLASH_SCREEN = "splash"
     const val MAIN_CHAT_SCREEN = "main_chat"
-    const val SETTINGS_SCREEN = "settings" // <-- RUTE BARU
+    const val SETTINGS_SCREEN = "settings"
+    const val APP_USAGE_SCREEN = "app_usage"
 }
 
-@Composable
-fun AppNavigation(
-    // Jika SettingsScreen butuh Application context untuk ViewModel-nya,
-    // Anda mungkin perlu meneruskannya atau memastikan ViewModelFactory-nya bisa mengaksesnya.
-    // Untuk sekarang, kita buat sederhana dulu.
-    // application: Application = LocalContext.current.applicationContext as Application
-) {
+@OptIn(ExperimentalMaterial3Api::class) // Anotasi untuk Composable yang masih eksperimental
+@Composable // <-- ANOTASI PENTING YANG HILANG!
+fun AppNavigation() {
     val navController = rememberNavController()
     NavHost(
         navController = navController,
-        startDestination = NavDestinations.SPLASH_SCREEN
+        startDestination = NavDestinations.SPLASH_SCREEN // Kembali ke Splash Screen sebagai awal
     ) {
         composable(NavDestinations.SPLASH_SCREEN) {
             SplashScreen(
@@ -81,20 +68,28 @@ fun AppNavigation(
             )
         }
         composable(NavDestinations.MAIN_CHAT_SCREEN) {
-            // Meneruskan navController ke MainChatScreen agar bisa navigasi ke Settings
+            // Sekarang kita berikan NavController ke MainChatScreen
             MainChatScreen(
-                // application = application, // Jika ViewModel di MainChatScreen butuh
-                onNavigateToSettings = {
-                    navController.navigate(NavDestinations.SETTINGS_SCREEN)
-                }
+                navController = navController
             )
         }
         composable(NavDestinations.SETTINGS_SCREEN) {
-            SettingsScreen(
-                navController = navController
-                // application = application // Aktifkan jika SettingsViewModel.Factory Anda membutuhkannya
-            )
+            SettingsScreen(navController = navController)
         }
-
+        composable(NavDestinations.APP_USAGE_SCREEN) {
+            // Placeholder untuk layar statistik
+            Scaffold(
+                topBar = { TopAppBar(title = { Text("Statistik Penggunaan") }) }
+            ) { padding ->
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(padding),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text("Layar Statistik Aplikasi akan ada di sini, Kapten! 💕")
+                }
+            }
+        }
     }
 }

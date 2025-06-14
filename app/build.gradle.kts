@@ -103,6 +103,7 @@ dependencies {
     implementation(libs.androidx.activity)
     implementation(libs.androidx.constraintlayout)
     implementation(libs.androidx.work.runtime.ktx)
+    implementation("androidx.compose.material:material-icons-extended")
 
     // Jetpack Compose - Menggunakan Bill of Materials (BOM)
     val composeBomVersion = "2024.05.00" // Versi stabil umum

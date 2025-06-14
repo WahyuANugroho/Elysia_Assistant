@@ -1,86 +1,92 @@
-package com.example.elysia_assistant.data.repository
+package com.example.elysia_assistant.data.repository // Pastikan package ini sesuai ya, Kapten!
 
 import android.location.Location
 import android.util.Log
-// Pastikan BuildConfig diimpor dari package aplikasi Anda yang benar
 import com.example.elysia_assistant.BuildConfig
+import com.example.elysia_assistant.data.local.PreferenceManager
+import com.example.elysia_assistant.data.local.WeatherCacheData
 import com.example.elysia_assistant.data.remote.WeatherApiService
-import com.example.elysia_assistant.domain.model.WeatherApiResponse // Data class Anda
-import com.example.elysia_assistant.util.LocationProvider // Atau path LocationProvider Anda
+import com.example.elysia_assistant.domain.model.WeatherApiResponse
+import com.example.elysia_assistant.util.LocationProvider
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.firstOrNull
+import kotlinx.coroutines.withTimeoutOrNull
+import java.util.Locale
 
-// Sealed class untuk membungkus hasil operasi jaringan
 sealed class WeatherResult {
     data class Success(val data: WeatherApiResponse) : WeatherResult()
     data class Error(val message: String, val cause: Throwable? = null) : WeatherResult()
-    // Anda bisa menambahkan state Loading di sini jika ingin dikelola dari Repository
-    // object Loading : WeatherResult()
 }
 
 class WeatherRepository(
-    private val weatherApiService: WeatherApiService, // Akan di-inject atau dibuat via NetworkModule
-    private val locationProvider: LocationProvider    // Akan di-inject atau dibuat
+    private val weatherApiService: WeatherApiService,
+    private val locationProvider: LocationProvider,
+    private val preferenceManager: PreferenceManager
 ) {
 
     companion object {
         private const val TAG = "WeatherRepository"
+        private const val LOCATION_FETCH_TIMEOUT_MS = 15000L
     }
 
-    suspend fun getCurrentWeatherForCurrentLocation(): WeatherResult {
-        Log.d(TAG, "getCurrentWeatherForCurrentLocation: Attempting to fetch weather.")
+    /**
+     * Menyediakan Flow untuk data cuaca yang tersimpan di cache.
+     * ViewModel akan mengamati ini untuk update UI yang instan.
+     */
+    fun getCachedWeather(): Flow<WeatherCacheData?> {
+        return preferenceManager.weatherCacheFlow
+    }
 
-        // 1. Cek izin lokasi terlebih dahulu melalui LocationProvider
+    /**
+     * Mengambil data cuaca baru dari jaringan.
+     * Fungsi ini akan mengambil lokasi, memanggil API, dan menyimpan hasilnya ke cache.
+     */
+    suspend fun fetchFreshWeatherData(): WeatherResult {
         if (!locationProvider.hasLocationPermission()) {
-            Log.w(TAG, "getCurrentWeatherForCurrentLocation: Location permission not granted.")
-            return WeatherResult.Error("Izin lokasi tidak diberikan oleh pengguna.")
+            return WeatherResult.Error("Izin lokasi tidak diberikan.")
         }
-
-        // 2. Dapatkan lokasi saat ini
-        Log.d(TAG, "getCurrentWeatherForCurrentLocation: Fetching current location.")
-        val location: Location? = try {
-            locationProvider.fetchCurrentLocation().firstOrNull() // Mengambil satu emisi lokasi
-        } catch (e: Exception) {
-            Log.e(TAG, "getCurrentWeatherForCurrentLocation: Exception while fetching location.", e)
-            return WeatherResult.Error("Gagal mendapatkan lokasi (exception): ${e.message}", e)
+        val location: Location? = withTimeoutOrNull(LOCATION_FETCH_TIMEOUT_MS) {
+            locationProvider.fetchCurrentLocation().firstOrNull()
         }
-
         if (location == null) {
-            Log.w(TAG, "getCurrentWeatherForCurrentLocation: Location data is null.")
-            return WeatherResult.Error("Tidak bisa mendapatkan data lokasi saat ini (hasil null dari provider).")
+            return WeatherResult.Error("Tidak bisa mendapatkan lokasi. Pastikan GPS aktif ya, Kapten!")
         }
-        Log.d(TAG, "getCurrentWeatherForCurrentLocation: Location acquired: Lat=${location.latitude}, Lon=${location.longitude}")
 
-        // 3. Jika lokasi didapat, panggil API cuaca
-        Log.d(TAG, "getCurrentWeatherForCurrentLocation: Fetching weather data from API. API Key: ${BuildConfig.OPEN_WEATHER_API_KEY.take(5)}...") // Hanya log sebagian kecil API Key
         return try {
             val response = weatherApiService.getCurrentWeather(
                 latitude = location.latitude,
                 longitude = location.longitude,
-                apiKey = BuildConfig.OPEN_WEATHER_API_KEY, // Menggunakan API Key dari BuildConfig
-                units = "metric", // Untuk Celcius
-                language = "id"   // Untuk deskripsi Bahasa Indonesia
+                apiKey = BuildConfig.OPEN_WEATHER_API_KEY
             )
 
-            Log.d(TAG, "getCurrentWeatherForCurrentLocation: API response code: ${response.code()}")
             if (response.isSuccessful && response.body() != null) {
-                response.body()?.let { weatherData ->
-                    Log.d(TAG, "getCurrentWeatherForCurrentLocation: API call successful. City: ${weatherData.cityName}")
-                    WeatherResult.Success(weatherData)
-                } ?: run {
-                    Log.e(TAG, "getCurrentWeatherForCurrentLocation: API response body is null despite successful HTTP call.")
-                    WeatherResult.Error("Respons API cuaca kosong meskipun berhasil (body null).")
-                }
+                val weatherData = response.body()!!
+                Log.i(TAG, "Berhasil mengambil data cuaca untuk ${weatherData.cityName}")
+
+                // Simpan ke cache setelah berhasil dapat data baru
+                saveWeatherDataToCache(weatherData)
+
+                WeatherResult.Success(weatherData)
             } else {
-                val errorBody = response.errorBody()?.string() ?: "No error body"
-                Log.e(TAG, "getCurrentWeatherForCurrentLocation: API call failed. Code: ${response.code()}, Message: ${response.message()}, ErrorBody: $errorBody")
-                WeatherResult.Error("Gagal mengambil data cuaca: HTTP ${response.code()} - ${response.message()}. Detail: $errorBody")
+                WeatherResult.Error("Gagal mengambil data cuaca: HTTP ${response.code()}")
             }
         } catch (e: Exception) {
-            Log.e(TAG, "getCurrentWeatherForCurrentLocation: Network exception or other error during API call.", e)
-            WeatherResult.Error(
-                "Error jaringan atau masalah lain saat mengambil cuaca: ${e.message}",
-                e
-            )
+            WeatherResult.Error("Error jaringan: Periksa koneksi internetmu ya, Kapten.")
         }
+    }
+
+    /**
+     * Fungsi privat untuk mengubah data dari API menjadi format cache dan menyimpannya.
+     */
+    private suspend fun saveWeatherDataToCache(weatherData: WeatherApiResponse) {
+        val cacheData = WeatherCacheData(
+            cityName = weatherData.cityName,
+            temperature = weatherData.mainWeatherData?.temperature?.let { "%.0f°C".format(it) },
+            condition = weatherData.weatherDescriptions?.firstOrNull()?.description?.replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale.getDefault()) else it.toString() },
+            iconCode = weatherData.weatherDescriptions?.firstOrNull()?.icon,
+            lastUpdatedTimestamp = System.currentTimeMillis()
+        )
+        preferenceManager.saveWeatherCache(cacheData)
+        Log.i(TAG, "Data cuaca baru berhasil disimpan di cache.")
     }
 }
